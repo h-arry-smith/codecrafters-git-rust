@@ -51,6 +51,16 @@ impl Blob {
             contents,
         }
     }
+
+    fn path(&self) -> PathBuf {
+        Self::path_from_object_hash(&self.object_hash)
+    }
+
+    fn path_from_object_hash(object_hash: &str) -> PathBuf {
+        let directory = object_hash.chars().take(2).collect::<String>();
+        let filename = object_hash.chars().skip(2).collect::<String>();
+        format!(".git/objects/{}/{}", directory, filename).into()
+    }
 }
 
 fn git_init() {
@@ -62,9 +72,7 @@ fn git_init() {
 }
 
 fn git_cat_file(args: &CatFileArgs) {
-    let directory = args.object.chars().take(2).collect::<String>();
-    let filename = args.object.chars().skip(2).collect::<String>();
-    let path = format!(".git/objects/{}/{}", directory, filename);
+    let path = Blob::path_from_object_hash(&args.object);
 
     let file = fs::read(path).unwrap();
 

@@ -52,6 +52,31 @@ impl Blob {
         }
     }
 
+    fn from_contents(contents: &str) -> Self {
+        let length = contents.len();
+        let header = format!("blob {}\0", length);
+        let store = format!("{}{}", header, contents);
+
+        let mut hasher = Sha1::new();
+        hasher.update(store.as_bytes());
+        let result = hasher.finalize();
+        let object_hash = format!("{:x}", result);
+
+        Self {
+            object_hash,
+            length,
+            contents: contents.to_string(),
+        }
+    }
+
+    fn header(&self) -> String {
+        format!("blob {}\0", self.length)
+    }
+
+    fn as_bytes(&self) -> Vec<u8> {
+        format!("{}{}", self.header(), self.contents).into_bytes()
+    }
+
     fn path(&self) -> PathBuf {
         Self::path_from_object_hash(&self.object_hash)
     }
@@ -111,29 +136,19 @@ fn git_cat_file(args: &CatFileArgs) {
 
 fn git_hash_object(args: &HashObjectArgs) {
     let contents = fs::read_to_string(&args.path).unwrap();
-    let header = format!("blob {}\0", contents.len());
-    let store = format!("{}{}", header, contents);
-
-    let mut hasher = Sha1::new();
-    hasher.update(store.as_bytes());
-    let result = hasher.finalize();
-    let hash = format!("{:x}", result);
-
-    let directory = hash.chars().take(2).collect::<String>();
-    let filename = hash.chars().skip(2).collect::<String>();
-    let path = format!(".git/objects/{}/{}", directory, filename);
+    let blob = Blob::from_contents(&contents);
 
     if args.write {
-        fs::create_dir_all(format!(".git/objects/{}", directory)).unwrap();
+        fs::create_dir_all(blob.dir_path()).unwrap();
 
         let mut encoder = ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(store.as_bytes()).unwrap();
+        encoder.write_all(&blob.as_bytes()).unwrap();
 
         let compressed = encoder.finish().unwrap();
-        fs::write(path, compressed).unwrap();
+        fs::write(blob.path(), compressed).unwrap();
     }
 
-    println!("{}", hash);
+    println!("{}", blob.object_hash);
 }
 
 fn main() {

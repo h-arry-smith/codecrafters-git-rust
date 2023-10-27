@@ -56,10 +56,19 @@ impl Blob {
         Self::path_from_object_hash(&self.object_hash)
     }
 
+    fn dir_path(&self) -> PathBuf {
+        Self::dir_path_from_object_hash(&self.object_hash)
+    }
+
     fn path_from_object_hash(object_hash: &str) -> PathBuf {
         let directory = object_hash.chars().take(2).collect::<String>();
         let filename = object_hash.chars().skip(2).collect::<String>();
         format!(".git/objects/{}/{}", directory, filename).into()
+    }
+
+    fn dir_path_from_object_hash(object_hash: &str) -> PathBuf {
+        let directory = object_hash.chars().take(2).collect::<String>();
+        format!(".git/objects/{}", directory).into()
     }
 }
 

@@ -34,7 +34,23 @@ struct HashObjectArgs {
 }
 
 enum GitObject {
-    Blob { length: usize, contents: String },
+    Blob(Blob),
+}
+
+struct Blob {
+    object_hash: String,
+    length: usize,
+    contents: String,
+}
+
+impl Blob {
+    fn new(object_hash: String, length: usize, contents: String) -> Self {
+        Self {
+            object_hash,
+            length,
+            contents,
+        }
+    }
 }
 
 fn git_init() {
@@ -61,19 +77,17 @@ fn git_cat_file(args: &CatFileArgs) {
     let length: usize = length.parse().unwrap();
 
     let object = match tipe {
-        "blob" => GitObject::Blob {
+        "blob" => GitObject::Blob(Blob::new(
+            args.object.clone(),
             length,
-            contents: contents[1][0..length].to_string(),
-        },
+            contents[1][0..length].to_string(),
+        )),
         _ => panic!("Unknown object type: {}", tipe),
     };
 
     match object {
-        GitObject::Blob {
-            length: _,
-            contents,
-        } => {
-            print!("{}", contents);
+        GitObject::Blob(blob) => {
+            print!("{}", blob.contents);
         }
     }
 }

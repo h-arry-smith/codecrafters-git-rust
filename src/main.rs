@@ -33,6 +33,37 @@ struct HashObjectArgs {
     path: PathBuf,
 }
 
+trait HasObjectHash {
+    fn hash(&self) -> &str;
+}
+
+trait GitPath {
+    fn path(&self) -> PathBuf;
+    fn dir_path(&self) -> PathBuf;
+    fn path_from_object_hash(object_hash: &str) -> PathBuf;
+    fn dir_path_from_object_hash(object_hash: &str) -> PathBuf;
+}
+
+impl<T: HasObjectHash> GitPath for T {
+    fn path(&self) -> PathBuf {
+        Self::path_from_object_hash(self.hash())
+    }
+
+    fn dir_path(&self) -> PathBuf {
+        Self::dir_path_from_object_hash(self.hash())
+    }
+
+    fn path_from_object_hash(object_hash: &str) -> PathBuf {
+        let directory = object_hash.chars().take(2).collect::<String>();
+        let filename = object_hash.chars().skip(2).collect::<String>();
+        format!(".git/objects/{}/{}", directory, filename).into()
+    }
+
+    fn dir_path_from_object_hash(object_hash: &str) -> PathBuf {
+        let directory = object_hash.chars().take(2).collect::<String>();
+        format!(".git/objects/{}", directory).into()
+    }
+}
 enum GitObject {
     Blob(Blob),
 }
@@ -76,24 +107,11 @@ impl Blob {
     fn as_bytes(&self) -> Vec<u8> {
         format!("{}{}", self.header(), self.contents).into_bytes()
     }
-
-    fn path(&self) -> PathBuf {
-        Self::path_from_object_hash(&self.object_hash)
     }
 
-    fn dir_path(&self) -> PathBuf {
-        Self::dir_path_from_object_hash(&self.object_hash)
-    }
-
-    fn path_from_object_hash(object_hash: &str) -> PathBuf {
-        let directory = object_hash.chars().take(2).collect::<String>();
-        let filename = object_hash.chars().skip(2).collect::<String>();
-        format!(".git/objects/{}/{}", directory, filename).into()
-    }
-
-    fn dir_path_from_object_hash(object_hash: &str) -> PathBuf {
-        let directory = object_hash.chars().take(2).collect::<String>();
-        format!(".git/objects/{}", directory).into()
+impl HasObjectHash for Blob {
+    fn hash(&self) -> &str {
+        &self.object_hash
     }
 }
 

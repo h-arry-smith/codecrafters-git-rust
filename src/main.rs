@@ -1,7 +1,13 @@
+use bytes::Buf;
 use clap::Args;
 use flate2::{read::ZlibDecoder, write::ZlibEncoder};
 use sha1::{Digest, Sha1};
+use std::fmt::Display;
+use std::fmt::Write as FmtWrite;
 use std::io::prelude::*;
+use std::io::BufReader;
+use std::io::Write;
+use std::str::FromStr;
 use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -24,7 +30,7 @@ enum Commands {
 struct CatFileArgs {
     #[arg(short)]
     pretty_print: bool,
-    object: String,
+    object: GitHash,
 }
 
 #[derive(Debug, Args)]
@@ -38,122 +44,139 @@ struct HashObjectArgs {
 struct LsTreeArgs {
     #[arg(long)]
     name_only: bool,
-    object: String,
+    object: GitHash,
 }
-
-// TODO: As interesting as this trait implementation is, it's not really needed for this project.
-//       A GitPath struct can host these methods, and be a field on the Tree/Blob structs.
-trait HasObjectHash {
-    fn hash(&self) -> &str;
-}
-
-trait GitPath {
-    fn path(&self) -> PathBuf;
-    fn dir_path(&self) -> PathBuf;
-    fn path_from_object_hash(object_hash: &str) -> PathBuf;
-    fn dir_path_from_object_hash(object_hash: &str) -> PathBuf;
-}
-
-impl<T: HasObjectHash> GitPath for T {
-    fn path(&self) -> PathBuf {
-        Self::path_from_object_hash(self.hash())
-    }
-
-    fn dir_path(&self) -> PathBuf {
-        Self::dir_path_from_object_hash(self.hash())
-    }
-
-    fn path_from_object_hash(object_hash: &str) -> PathBuf {
-        let directory = object_hash.chars().take(2).collect::<String>();
-        let filename = object_hash.chars().skip(2).collect::<String>();
-        format!(".git/objects/{}/{}", directory, filename).into()
-    }
-
-    fn dir_path_from_object_hash(object_hash: &str) -> PathBuf {
-        let directory = object_hash.chars().take(2).collect::<String>();
-        format!(".git/objects/{}", directory).into()
-    }
-}
-
 enum GitObject {
     Blob(Blob),
     Tree(Tree),
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GitHash {
+    hash: [u8; 20],
+}
+
+impl FromStr for GitHash {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.len() != 40 {
+            return Err("Hash must be 40 characters long");
+        }
+
+        let hash: [u8; 20] = hex::decode(s)
+            .unwrap()
+            .try_into()
+            .expect("failed to decode");
+
+        Ok(Self::new(hash))
+    }
+}
+
+impl GitHash {
+    fn new(hash: [u8; 20]) -> Self {
+        Self { hash }
+    }
+
+    fn path(&self) -> PathBuf {
+        let mut directory = String::with_capacity(2);
+        for b in &self.hash[0..1] {
+            write!(directory, "{:02x}", b).unwrap();
+        }
+        let mut filename = String::with_capacity(38);
+        for b in &self.hash[1..20] {
+            write!(filename, "{:02x}", b).unwrap();
+        }
+        format!(".git/objects/{}/{}", directory, filename).into()
+    }
+
+    fn dir_path(&self) -> PathBuf {
+        let mut directory = String::with_capacity(2);
+        for b in &self.hash[0..1] {
+            write!(directory, "{:02x}", b).unwrap();
+        }
+        format!(".git/objects/{}", directory).into()
+    }
+}
+
+impl Display for GitHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut hash = String::with_capacity(40);
+        for b in &self.hash {
+            write!(hash, "{:02x}", b).unwrap();
+        }
+        write!(f, "{}", hash)
+    }
+}
+
 struct Blob {
-    object_hash: String,
+    hash: GitHash,
     length: usize,
     contents: String,
 }
 
 #[derive(Debug)]
 struct Tree {
-    object_hash: String,
+    hash: GitHash,
     entries: Vec<TreeEntry>,
 }
 
 impl Tree {
-    fn new(object_hash: String, entries: Vec<TreeEntry>) -> Self {
-        Self {
-            object_hash,
-            entries,
-        }
+    fn new(hash: GitHash, entries: Vec<TreeEntry>) -> Self {
+        Self { hash, entries }
     }
 
     fn from_tree_file(contents: &str) -> Self {
-        let (_, remaining) = contents.split_once('\0').unwrap();
-        let mut remaining = remaining.to_string();
+        let hash = {
+            let mut hasher = Sha1::new();
+            hasher.update(contents.as_bytes());
+            let result = hasher.finalize();
+            GitHash::new(result.into())
+        };
+
+        let mut reader = BufReader::new(contents.as_bytes());
+        let mut header = Vec::new();
+        reader.read_until(b'\0', &mut header).unwrap();
 
         let mut entries = Vec::new();
         loop {
-            let (mode, remainder) = remaining.split_once(' ').unwrap();
-            let (name, remainder) = remainder.split_once('\0').unwrap();
-            // FIXME: Must be a better way of doing this, like we should just iterate over the chars continually
-            let hash = remainder.chars().take(20).collect::<String>();
-            let remainder = remainder.chars().skip(20).collect::<String>();
+            let mut file_description = Vec::new();
+            reader.read_until(b'\0', &mut file_description).unwrap();
 
-            entries.push(TreeEntry {
-                mode: mode.to_string(),
-                object_hash: hash.to_string(),
-                name: name.to_string(),
-            });
+            let mut hash: [u8; 20] = [0; 20];
+            reader.read_exact(&mut hash).unwrap();
 
-            if remainder.len() <= 20 {
+            let file_description = String::from_utf8_lossy(&file_description);
+            let (mode, name) = file_description.trim().split_once(' ').unwrap();
+
+            let entry = TreeEntry {
+                mode: mode.trim_end_matches(char::from(0)).to_string(),
+                hash: GitHash::new(hash),
+                name: name.trim_end_matches(char::from(0)).to_string(),
+            };
+
+            entries.push(entry);
+
+            if reader.buffer().len() < 20 {
                 break;
             }
-
-            remaining = remainder;
         }
 
-        let mut hasher = Sha1::new();
-        hasher.update(contents.as_bytes());
-        let result = hasher.finalize();
-        let object_hash = format!("{:x}", result);
-
-        Self {
-            object_hash,
-            entries,
-        }
-    }
-}
-
-impl HasObjectHash for Tree {
-    fn hash(&self) -> &str {
-        &self.object_hash
+        Self::new(hash, entries)
     }
 }
 
 #[derive(Debug)]
 struct TreeEntry {
     mode: String,
-    object_hash: String,
+    hash: GitHash,
     name: String,
 }
 
 impl Blob {
-    fn new(object_hash: String, length: usize, contents: String) -> Self {
+    fn new(hash: GitHash, length: usize, contents: String) -> Self {
         Self {
-            object_hash,
+            hash,
             length,
             contents,
         }
@@ -167,10 +190,10 @@ impl Blob {
         let mut hasher = Sha1::new();
         hasher.update(store.as_bytes());
         let result = hasher.finalize();
-        let object_hash = format!("{:x}", result);
+        let hash = GitHash::new(result.into());
 
         Self {
-            object_hash,
+            hash,
             length,
             contents: contents.to_string(),
         }
@@ -186,12 +209,6 @@ impl Blob {
     }
 }
 
-impl HasObjectHash for Blob {
-    fn hash(&self) -> &str {
-        &self.object_hash
-    }
-}
-
 fn git_init() {
     fs::create_dir(".git").unwrap();
     fs::create_dir(".git/objects").unwrap();
@@ -200,9 +217,8 @@ fn git_init() {
     println!("Initialized git directory")
 }
 
-fn load_git_object_from_hash(object: &str) -> GitObject {
-    let path = Blob::path_from_object_hash(object);
-    let file = fs::read(path).unwrap();
+fn load_git_object_from_hash(hash: GitHash) -> GitObject {
+    let file = fs::read(hash.path()).unwrap();
 
     let mut decompressed = ZlibDecoder::new(&file[..]);
     let mut buf = Vec::new();
@@ -216,11 +232,7 @@ fn load_git_object_from_hash(object: &str) -> GitObject {
     // TODO: We should homogonise a deserialise/serialize function for each object struct, maybe as trait
     match tipe {
         "blob" => {
-            let blob = Blob::new(
-                object.to_string(),
-                length,
-                split_contents[1][0..length].to_string(),
-            );
+            let blob = Blob::new(hash, length, split_contents[1][0..length].to_string());
             GitObject::Blob(blob)
         }
         "tree" => GitObject::Tree(Tree::from_tree_file(&contents)),
@@ -229,7 +241,7 @@ fn load_git_object_from_hash(object: &str) -> GitObject {
 }
 
 fn git_cat_file(args: &CatFileArgs) {
-    let object = load_git_object_from_hash(&args.object);
+    let object = load_git_object_from_hash(args.object);
 
     match object {
         GitObject::Blob(blob) => {
@@ -244,20 +256,20 @@ fn git_hash_object(args: &HashObjectArgs) {
     let blob = Blob::from_contents(&contents);
 
     if args.write {
-        fs::create_dir_all(blob.dir_path()).unwrap();
+        fs::create_dir_all(blob.hash.dir_path()).unwrap();
 
         let mut encoder = ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(&blob.as_bytes()).unwrap();
 
         let compressed = encoder.finish().unwrap();
-        fs::write(blob.path(), compressed).unwrap();
+        fs::write(blob.hash.path(), compressed).unwrap();
     }
 
-    println!("{}", blob.object_hash);
+    print!("{}", blob.hash);
 }
 
 fn git_ls_tree(args: &LsTreeArgs) {
-    let object = load_git_object_from_hash(&args.object);
+    let object = load_git_object_from_hash(args.object);
 
     match object {
         GitObject::Blob(_) => panic!("git ls-tree <blob> not implemented!"),

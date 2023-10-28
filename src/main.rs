@@ -41,6 +41,8 @@ struct LsTreeArgs {
     object: String,
 }
 
+// TODO: As interesting as this trait implementation is, it's not really needed for this project.
+//       A GitPath struct can host these methods, and be a field on the Tree/Blob structs.
 trait HasObjectHash {
     fn hash(&self) -> &str;
 }
@@ -99,21 +101,29 @@ impl Tree {
     }
 
     fn from_tree_file(contents: &str) -> Self {
-        let (header, rest) = contents.split_once('\0').unwrap();
-        let length: usize = header.split(' ').nth(1).unwrap().parse().unwrap();
-        let entries = rest
-            .split('\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                let (mode, rest) = line.split_once(' ').unwrap();
-                let (name, object_hash) = rest.split_once('\0').unwrap();
-                TreeEntry {
-                    mode: mode.to_string(),
-                    object_hash: object_hash.to_string(),
-                    name: name.to_string(),
-                }
-            })
-            .collect::<Vec<TreeEntry>>();
+        let (_, remaining) = contents.split_once('\0').unwrap();
+        let mut remaining = remaining.to_string();
+
+        let mut entries = Vec::new();
+        loop {
+            let (mode, remainder) = remaining.split_once(' ').unwrap();
+            let (name, remainder) = remainder.split_once('\0').unwrap();
+            // FIXME: Must be a better way of doing this, like we should just iterate over the chars continually
+            let hash = remainder.chars().take(20).collect::<String>();
+            let remainder = remainder.chars().skip(20).collect::<String>();
+
+            entries.push(TreeEntry {
+                mode: mode.to_string(),
+                object_hash: hash.to_string(),
+                name: name.to_string(),
+            });
+
+            if remainder.len() <= 20 {
+                break;
+            }
+
+            remaining = remainder;
+        }
 
         let mut hasher = Sha1::new();
         hasher.update(contents.as_bytes());

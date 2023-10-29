@@ -1,4 +1,3 @@
-use bytes::Buf;
 use clap::Args;
 use flate2::{read::ZlibDecoder, write::ZlibEncoder};
 use sha1::{Digest, Sha1};
@@ -24,6 +23,7 @@ enum Commands {
     CatFile(CatFileArgs),
     HashObject(HashObjectArgs),
     LsTree(LsTreeArgs),
+    WriteTree,
 }
 
 #[derive(Debug, Args)]
@@ -46,6 +46,7 @@ struct LsTreeArgs {
     name_only: bool,
     object: GitHash,
 }
+
 enum GitObject {
     Blob(Blob),
     Tree(Tree),
@@ -164,6 +165,98 @@ impl Tree {
 
         Self::new(hash, entries)
     }
+
+    fn from_entries(entries: Vec<TreeEntry>) -> Self {
+        let contents = Self::contents_from_entries(&entries);
+
+        let mut hasher = Sha1::new();
+        hasher.update(contents.as_bytes());
+        let result = hasher.finalize();
+        let hash = GitHash::new(result.into());
+
+        Self { hash, entries }
+    }
+
+    fn body(&self) -> String {
+        Self::body_from_entries(&self.entries)
+    }
+
+    fn contents(&self) -> String {
+        Self::contents_from_entries(&self.entries)
+    }
+
+    fn body_from_entries(entries: &[TreeEntry]) -> String {
+        let mut contents = String::new();
+
+        for entry in entries.iter() {
+            contents.push_str(&format!("{} {}\0", entry.mode, entry.name));
+
+            let hash_string = unsafe { std::str::from_utf8_unchecked(&entry.hash.hash) };
+
+            contents.push_str(hash_string);
+        }
+
+        contents
+    }
+
+    fn contents_from_entries(entries: &[TreeEntry]) -> String {
+        let body = Self::body_from_entries(entries);
+        format!("tree {}\0{}", body.len(), body)
+    }
+
+    fn tree_from_directory(path: PathBuf) -> Self {
+        let mut files_and_directories_in_path = fs::read_dir(path).unwrap().collect::<Vec<_>>();
+
+        files_and_directories_in_path.sort_by(|a, b| {
+            let a = a.as_ref().unwrap();
+            let b = b.as_ref().unwrap();
+
+            a.file_name()
+                .to_str()
+                .unwrap()
+                .cmp(b.file_name().to_str().unwrap())
+        });
+
+        let files_and_directories_in_path = files_and_directories_in_path.iter().filter(|entry| {
+            if let Ok(entry) = entry {
+                entry.file_name().to_str().unwrap() != ".git"
+            } else {
+                false
+            }
+        });
+
+        let mut entries = Vec::new();
+
+        for entry in files_and_directories_in_path {
+            let entry = entry.as_ref().unwrap();
+            let path = entry.path();
+            let metadata = entry.metadata().unwrap();
+
+            if metadata.is_dir() {
+                let tree = Self::tree_from_directory(path);
+                let tree_entry = TreeEntry {
+                    mode: "40000".to_string(),
+                    hash: tree.hash,
+                    name: entry.file_name().to_str().unwrap().to_string(),
+                };
+
+                entries.push(tree_entry);
+            } else {
+                let contents = fs::read_to_string(path).unwrap();
+                let blob = Blob::from_contents(&contents);
+
+                let tree_entry = TreeEntry {
+                    mode: "100644".to_string(),
+                    hash: blob.hash,
+                    name: entry.file_name().to_str().unwrap().to_string(),
+                };
+
+                entries.push(tree_entry);
+            }
+        }
+
+        Self::from_entries(entries)
+    }
 }
 
 #[derive(Debug)]
@@ -281,6 +374,19 @@ fn git_ls_tree(args: &LsTreeArgs) {
     }
 }
 
+fn git_write_tree() {
+    let tree = Tree::tree_from_directory(PathBuf::from("."));
+    fs::create_dir_all(tree.hash.dir_path()).unwrap();
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(tree.contents().as_bytes()).unwrap();
+
+    let compressed = encoder.finish().unwrap();
+    fs::write(tree.hash.path(), compressed).unwrap();
+
+    println!("{}", tree.hash);
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -296,5 +402,6 @@ fn main() {
         Commands::LsTree(args) => {
             git_ls_tree(args);
         }
+        Commands::WriteTree => git_write_tree(),
     }
 }

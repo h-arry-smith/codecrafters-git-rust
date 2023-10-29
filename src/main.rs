@@ -145,7 +145,11 @@ impl Tree {
             reader.read_until(b'\0', &mut file_description).unwrap();
 
             let mut hash: [u8; 20] = [0; 20];
-            reader.read_exact(&mut hash).unwrap();
+            let read_result = reader.read_exact(&mut hash);
+
+            if read_result.is_err() {
+                break;
+            }
 
             let file_description = String::from_utf8_lossy(&file_description);
             let (mode, name) = file_description.trim().split_once(' ').unwrap();
@@ -175,10 +179,6 @@ impl Tree {
         let hash = GitHash::new(result.into());
 
         Self { hash, entries }
-    }
-
-    fn body(&self) -> String {
-        Self::body_from_entries(&self.entries)
     }
 
     fn contents(&self) -> String {

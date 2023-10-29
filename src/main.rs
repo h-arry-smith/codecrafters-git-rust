@@ -7,6 +7,7 @@ use std::io::prelude::*;
 use std::io::BufReader;
 use std::io::Write;
 use std::str::FromStr;
+use std::time::Instant;
 use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -24,6 +25,7 @@ enum Commands {
     HashObject(HashObjectArgs),
     LsTree(LsTreeArgs),
     WriteTree,
+    CommitTree(CommitTreeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -45,6 +47,15 @@ struct LsTreeArgs {
     #[arg(long)]
     name_only: bool,
     object: GitHash,
+}
+
+#[derive(Debug, Args)]
+struct CommitTreeArgs {
+    tree: GitHash,
+    #[arg(short)]
+    parent: GitHash,
+    #[arg(short)]
+    message: String,
 }
 
 enum GitObject {
@@ -387,6 +398,38 @@ fn git_write_tree() {
     println!("{}", tree.hash);
 }
 
+fn git_commit_tree(args: &CommitTreeArgs) {
+    let unix_timestamp = Instant::now().elapsed().as_secs();
+    let time_zone = "+0000";
+    let author = format!(
+        "{} <{}> {} {}",
+        "Harry Smith", "test@test.org", unix_timestamp, time_zone
+    );
+    let contents = format!(
+        "tree {}\nparent {}\nauthor {}\ncommitter {}\n\n{}\n",
+        args.tree, args.parent, author, author, args.message
+    );
+
+    // TODO: All this write logic is duplicated everywhere, and could be tidied up.
+    let hash = {
+        let mut hasher = Sha1::new();
+        hasher.update(contents.as_bytes());
+        let result = hasher.finalize();
+        GitHash::new(result.into())
+    };
+
+    let header = format!("commit {}\0", contents.len());
+
+    fs::create_dir_all(hash.dir_path()).unwrap();
+    let mut encoder = ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(header.as_bytes()).unwrap();
+    encoder.write_all(contents.as_bytes()).unwrap();
+    let compressed = encoder.finish().unwrap();
+    fs::write(hash.path(), compressed).unwrap();
+
+    println!("{}", hash);
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -403,5 +446,8 @@ fn main() {
             git_ls_tree(args);
         }
         Commands::WriteTree => git_write_tree(),
+        Commands::CommitTree(args) => {
+            git_commit_tree(args);
+        }
     }
 }
